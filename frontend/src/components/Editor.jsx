@@ -99,6 +99,9 @@ export default function Editor({
             value={page.title || ''}
             onChange={(e) => onUpdatePage('title', e.target.value)}
             className="title-input"
+            spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
           />
 
           <textarea
@@ -106,6 +109,9 @@ export default function Editor({
             value={page.content || ''}
             onChange={(e) => onUpdatePage('content', e.target.value)}
             className="diary-textarea"
+            spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
           />
         </div>
       </div>

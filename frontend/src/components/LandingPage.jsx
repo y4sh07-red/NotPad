@@ -118,6 +118,8 @@ export default function LandingPage({
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="search-input"
+              spellCheck={false}
+              autoCorrect="off"
             />
             {searchQuery && (
               <button
