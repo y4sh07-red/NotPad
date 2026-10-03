@@ -38,25 +38,59 @@ export default function App() {
 
   const [isSaved, setIsSaved] = useState(true);
   const [dbSource, setDbSource] = useState('local');
+  
+  const pagesRef = useRef(pages);
+  pagesRef.current = pages;
+
+  const activePageIdRef = useRef(activePageId);
+  activePageIdRef.current = activePageId;
+
   const updateTimeoutRef = useRef(null);
   const isEditingRef = useRef(false);
+  const editVersionRef = useRef(0);
 
   // Fetch latest notes from Express + Supabase backend
   const refreshNotes = useCallback(async () => {
+    // If user is actively typing/editing, skip auto-sync to prevent cursor jumps or text resets
     if (isEditingRef.current) return;
 
     const result = await fetchNotesFromBackend();
     if (result.success && Array.isArray(result.notes)) {
-      const sorted = [...result.notes].sort(
+      const currentActiveId = activePageIdRef.current;
+      const currentPages = pagesRef.current;
+      const activeLocalNote = currentPages.find((p) => p.id === currentActiveId);
+
+      // Merge backend notes while strictly protecting any active editing note's content
+      const mergedNotes = result.notes.map((serverNote) => {
+        if (currentActiveId && serverNote.id === currentActiveId && activeLocalNote) {
+          return {
+            ...serverNote,
+            title: activeLocalNote.title,
+            content: activeLocalNote.content,
+            updated_at: activeLocalNote.updated_at || serverNote.updated_at,
+            updatedAt: activeLocalNote.updatedAt || serverNote.updatedAt,
+          };
+        }
+        return serverNote;
+      });
+
+      // Keep any local-only notes that haven't synced yet
+      currentPages.forEach((localNote) => {
+        if (!mergedNotes.some((n) => n.id === localNote.id)) {
+          mergedNotes.push(localNote);
+        }
+      });
+
+      const sorted = mergedNotes.sort(
         (a, b) =>
-          new Date(b.updated_at || b.updatedAt || b.created_at) -
-          new Date(a.updated_at || a.updatedAt || a.created_at)
+          new Date(b.updated_at || b.updatedAt || b.created_at || 0) -
+          new Date(a.updated_at || a.updatedAt || a.created_at || 0)
       );
 
       setPages(sorted);
       setDbSource(result.source || 'supabase');
 
-      // Keep activePageId null if user is on landing page, or check if active note still exists
+      // Keep activePageId null if user is on landing page, or verify it still exists
       setActivePageId((prev) => {
         if (!prev) return null;
         const exists = sorted.some((p) => p.id === prev);
@@ -65,11 +99,11 @@ export default function App() {
     }
   }, []);
 
-  // Initial Load + Auto Sync (Polls every 3.5 seconds)
+  // Initial Load + Auto Sync (Polls every 4 seconds)
   useEffect(() => {
     refreshNotes();
 
-    const intervalId = setInterval(refreshNotes, 3500);
+    const intervalId = setInterval(refreshNotes, 4000);
 
     const handleFocus = () => refreshNotes();
     window.addEventListener('focus', handleFocus);
@@ -94,8 +128,27 @@ export default function App() {
   // Current active page object
   const activePage = pages.find((p) => p.id === activePageId) || null;
 
+  // Immediately flush any pending debounced save
+  const flushPendingSave = async () => {
+    if (updateTimeoutRef.current) {
+      clearTimeout(updateTimeoutRef.current);
+      updateTimeoutRef.current = null;
+    }
+    const currentActiveId = activePageIdRef.current;
+    if (!currentActiveId) return;
+
+    const currentActiveObj = pagesRef.current.find((p) => p.id === currentActiveId);
+    if (currentActiveObj) {
+      await updateNoteInBackend(currentActiveObj.id, currentActiveObj.title, currentActiveObj.content);
+      setIsSaved(true);
+      isEditingRef.current = false;
+    }
+  };
+
   // Add New Diary Note
   const handleAddNewPage = async () => {
+    await flushPendingSave();
+
     const todayStr = new Date().toLocaleDateString(undefined, {
       month: 'short',
       day: 'numeric',
@@ -123,44 +176,49 @@ export default function App() {
   const handleUpdatePage = (field, value) => {
     setIsSaved(false);
     isEditingRef.current = true;
+    editVersionRef.current += 1;
+    const version = editVersionRef.current;
     const now = new Date().toISOString();
+    const targetId = activePageId;
 
-    const updatedPages = pages.map((page) => {
-      if (page.id === activePageId) {
-        return {
-          ...page,
-          [field]: value,
-          updated_at: now,
-          updatedAt: now,
-        };
-      }
-      return page;
-    });
-
-    const sorted = [...updatedPages].sort(
-      (a, b) =>
-        new Date(b.updated_at || b.updatedAt || b.created_at) -
-        new Date(a.updated_at || a.updatedAt || a.created_at)
+    setPages((prevPages) =>
+      prevPages.map((page) => {
+        if (page.id === targetId) {
+          return {
+            ...page,
+            [field]: value,
+            updated_at: now,
+            updatedAt: now,
+          };
+        }
+        return page;
+      })
     );
 
-    setPages(sorted);
-
-    if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current);
+    if (updateTimeoutRef.current) {
+      clearTimeout(updateTimeoutRef.current);
+    }
 
     updateTimeoutRef.current = setTimeout(async () => {
-      const activeObj = sorted.find((p) => p.id === activePageId);
+      const activeObj = pagesRef.current.find((p) => p.id === targetId);
       if (activeObj) {
         await updateNoteInBackend(activeObj.id, activeObj.title, activeObj.content);
-        setIsSaved(true);
-        isEditingRef.current = false;
+        // Only mark saved if no new edits occurred during the backend request
+        if (editVersionRef.current === version) {
+          setIsSaved(true);
+          isEditingRef.current = false;
+        }
       }
-    }, 400);
+    }, 450);
   };
 
   // Delete Page
   const handleDeletePage = async (id) => {
-    const updated = pages.filter((p) => p.id !== id);
-    setPages(updated);
+    if (updateTimeoutRef.current) {
+      clearTimeout(updateTimeoutRef.current);
+      updateTimeoutRef.current = null;
+    }
+    setPages((prev) => prev.filter((p) => p.id !== id));
     if (activePageId === id) {
       setActivePageId(null);
     }
@@ -184,6 +242,11 @@ export default function App() {
     a.click();
   };
 
+  const handleBackToLanding = async () => {
+    await flushPendingSave();
+    setActivePageId(null);
+  };
+
   return (
     <div className="app-container">
       {activePageId === null ? (
@@ -202,7 +265,7 @@ export default function App() {
           onUpdatePage={handleUpdatePage}
           onExportPage={handleExportPage}
           onDeletePage={handleDeletePage}
-          onBack={() => setActivePageId(null)}
+          onBack={handleBackToLanding}
           isSaved={isSaved}
           dbSource={dbSource}
         />
