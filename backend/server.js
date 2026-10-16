@@ -115,21 +115,41 @@ app.post('/api/notes', async (req, res) => {
   }
 });
 
-// 3. UPDATE NOTE (Updates title, content, and latest updated_at timestamp)
+// 3. UPDATE NOTE (Only updates timestamp if title or content actually changed)
 app.put('/api/notes/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const { title, content } = req.body;
     const now = new Date().toISOString();
 
-    const updatePayload = {
-      updated_at: now,
-    };
-    if (title !== undefined) updatePayload.title = title;
-    if (content !== undefined) updatePayload.content = content;
-
     const ready = await isSupabaseReady();
     if (ready) {
+      // Check existing note in Supabase to see if title or content changed
+      const { data: existing, error: fetchErr } = await supabase
+        .from('notes')
+        .select('*')
+        .eq('id', id)
+        .single();
+
+      if (!fetchErr && existing) {
+        const titleSame = title === undefined || title === existing.title;
+        const contentSame = content === undefined || content === existing.content;
+        if (titleSame && contentSame) {
+          // No changes inside note, do not refresh updated_at!
+          return res.json({
+            success: true,
+            source: 'supabase',
+            data: existing,
+          });
+        }
+      }
+
+      const updatePayload = {
+        updated_at: now,
+      };
+      if (title !== undefined) updatePayload.title = title;
+      if (content !== undefined) updatePayload.content = content;
+
       const { data, error } = await supabase
         .from('notes')
         .update(updatePayload)
@@ -145,6 +165,20 @@ app.put('/api/notes/:id', async (req, res) => {
     } else {
       const index = localNotes.findIndex((n) => n.id === id);
       if (index >= 0) {
+        const existing = localNotes[index];
+        const titleSame = title === undefined || title === existing.title;
+        const contentSame = content === undefined || content === existing.content;
+        if (titleSame && contentSame) {
+          // No changes inside note, do not refresh updated_at!
+          return res.json({ success: true, source: 'local', data: existing });
+        }
+
+        const updatePayload = {
+          updated_at: now,
+        };
+        if (title !== undefined) updatePayload.title = title;
+        if (content !== undefined) updatePayload.content = content;
+
         localNotes[index] = { ...localNotes[index], ...updatePayload };
         return res.json({ success: true, source: 'local', data: localNotes[index] });
       } else {
@@ -194,3 +228,5 @@ app.get('/api/status', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 NotPad Express Backend running on http://localhost:${PORT}`);
 });
+
+module.exports = app;

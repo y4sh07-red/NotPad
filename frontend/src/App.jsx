@@ -130,10 +130,13 @@ export default function App() {
 
   // Immediately flush any pending debounced save
   const flushPendingSave = async () => {
-    if (updateTimeoutRef.current) {
-      clearTimeout(updateTimeoutRef.current);
-      updateTimeoutRef.current = null;
+    // Only flush if there is an actual pending save from edits
+    if (!updateTimeoutRef.current) {
+      return;
     }
+    clearTimeout(updateTimeoutRef.current);
+    updateTimeoutRef.current = null;
+
     const currentActiveId = activePageIdRef.current;
     if (!currentActiveId) return;
 
@@ -174,12 +177,19 @@ export default function App() {
 
   // Update Page Title or Content
   const handleUpdatePage = (field, value) => {
+    const targetId = activePageId;
+    const currentNote = pagesRef.current.find((p) => p.id === targetId);
+
+    // Only update and change timestamp if the value actually changed
+    if (currentNote && currentNote[field] === value) {
+      return;
+    }
+
     setIsSaved(false);
     isEditingRef.current = true;
     editVersionRef.current += 1;
     const version = editVersionRef.current;
     const now = new Date().toISOString();
-    const targetId = activePageId;
 
     setPages((prevPages) =>
       prevPages.map((page) => {
@@ -207,6 +217,7 @@ export default function App() {
         if (editVersionRef.current === version) {
           setIsSaved(true);
           isEditingRef.current = false;
+          updateTimeoutRef.current = null;
         }
       }
     }, 450);
